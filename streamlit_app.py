@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import ssl
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -114,6 +115,13 @@ SEGMA_SEGMENTS_JSON = os.getenv("SEGMA_SEGMENTS_JSON", "")
 SEGMA_MSSQL_DESTINATION_ID = os.getenv("MSSQL_DESTINATION_ID", "")
 SEGMA_SYNC_DESTINATIONS_JSON = os.getenv("SEGMA_SYNC_DESTINATIONS_JSON", "")
 SEGMA_SYNC_CHUNKSIZE = int(os.getenv("SEGMA_SYNC_CHUNKSIZE", "1000"))
+SEGMA_CA_BUNDLE = os.getenv("SEGMA_CA_BUNDLE", "")
+SEGMA_SSL_VERIFY = os.getenv("SEGMA_SSL_VERIFY", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 MSSQL_SERVER = os.getenv("MSSQL_SERVER", "")
 MSSQL_PORT = int(os.getenv("MSSQL_PORT", "1433"))
 MSSQL_DATABASE = os.getenv("MSSQL_DATABASE", "")
@@ -137,6 +145,30 @@ def default_sender(channel: str) -> str:
     if channel == "SMS":
         return SMS_DEFAULT_SENDER_NUMBER
     return ""
+
+
+def segma_ssl_context() -> ssl.SSLContext:
+    if not SEGMA_SSL_VERIFY:
+        return ssl._create_unverified_context()
+    if SEGMA_CA_BUNDLE:
+        return ssl.create_default_context(cafile=SEGMA_CA_BUNDLE)
+    return ssl.create_default_context()
+
+
+def open_segma_request(request: Request, timeout: int = 20):
+    return urlopen(request, timeout=timeout, context=segma_ssl_context())
+
+
+def format_segma_url_error(api_name: str, exc: URLError, payload: dict | None = None) -> RuntimeError:
+    details = str(exc.reason)
+    if isinstance(exc.reason, ssl.SSLCertVerificationError):
+        details = (
+            f"{details}. 若 SEGMA 使用內部 CA 或 self-signed certificate，"
+            "請設定 SEGMA_CA_BUNDLE 指向 PEM 格式 CA 憑證；"
+            "僅限本機臨時排障可設定 SEGMA_SSL_VERIFY=false。"
+        )
+    debug = segma_sync_request_debug(payload) if payload else ""
+    return RuntimeError(f"Could not reach {api_name}: {details}{debug}")
 
 
 def normalize_segma_profile(payload: dict) -> dict:
@@ -178,14 +210,14 @@ def load_segma_profile() -> dict:
         method="GET",
     )
     try:
-        with urlopen(request, timeout=20) as response:
+        with open_segma_request(request, timeout=20) as response:
             response_body = response.read().decode("utf-8")
             payload = json.loads(response_body) if response_body else {}
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"SEGMA profile API returned HTTP {exc.code}: {error_body}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Could not reach SEGMA profile API: {exc.reason}") from exc
+        raise format_segma_url_error("SEGMA profile API", exc) from exc
     if not isinstance(payload, dict):
         raise RuntimeError("SEGMA profile response must be an object.")
     return normalize_segma_profile(payload)
@@ -420,14 +452,14 @@ def load_segma_traits_for_dim(dim_id: int) -> dict:
         method="GET",
     )
     try:
-        with urlopen(request, timeout=20) as response:
+        with open_segma_request(request, timeout=20) as response:
             response_body = response.read().decode("utf-8")
             payload = json.loads(response_body) if response_body else []
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"SEGMA traits API returned HTTP {exc.code}: {error_body}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Could not reach SEGMA traits API: {exc.reason}") from exc
+        raise format_segma_url_error("SEGMA traits API", exc) from exc
     return normalize_segma_traits(payload)
 
 
@@ -444,14 +476,14 @@ def load_segma_action_dataset_columns(action_dataset_id: int) -> dict:
         method="GET",
     )
     try:
-        with urlopen(request, timeout=20) as response:
+        with open_segma_request(request, timeout=20) as response:
             response_body = response.read().decode("utf-8")
             payload = json.loads(response_body) if response_body else []
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"SEGMA ActionDataset columns API returned HTTP {exc.code}: {error_body}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Could not reach SEGMA ActionDataset columns API: {exc.reason}") from exc
+        raise format_segma_url_error("SEGMA ActionDataset columns API", exc) from exc
     return normalize_action_dataset_columns(payload)
 
 
@@ -468,14 +500,14 @@ def load_segma_segments_from_api() -> dict:
         method="GET",
     )
     try:
-        with urlopen(request, timeout=20) as response:
+        with open_segma_request(request, timeout=20) as response:
             response_body = response.read().decode("utf-8")
             payload = json.loads(response_body) if response_body else []
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"SEGMA segments API returned HTTP {exc.code}: {error_body}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Could not reach SEGMA segments API: {exc.reason}") from exc
+        raise format_segma_url_error("SEGMA segments API", exc) from exc
 
     if isinstance(payload, dict):
         items = payload.get("segments") or payload.get("data") or payload.get("items") or []
@@ -518,14 +550,14 @@ def load_segma_sync_destinations_from_api() -> dict:
         method="GET",
     )
     try:
-        with urlopen(request, timeout=20) as response:
+        with open_segma_request(request, timeout=20) as response:
             response_body = response.read().decode("utf-8")
             payload = json.loads(response_body) if response_body else []
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"SEGMA destinations API returned HTTP {exc.code}: {error_body}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Could not reach SEGMA destinations API: {exc.reason}") from exc
+        raise format_segma_url_error("SEGMA destinations API", exc) from exc
 
     if isinstance(payload, dict):
         items = payload.get("destinations") or payload.get("data") or payload.get("items") or []
@@ -592,14 +624,14 @@ def load_segma_seed_action_datasets() -> dict:
             method="GET",
         )
         try:
-            with urlopen(request, timeout=20) as response:
+            with open_segma_request(request, timeout=20) as response:
                 response_body = response.read().decode("utf-8")
                 payload = json.loads(response_body) if response_body else []
         except HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"SEGMA seed ActionDataset API returned HTTP {exc.code}: {error_body}") from exc
         except URLError as exc:
-            raise RuntimeError(f"Could not reach SEGMA seed ActionDataset API: {exc.reason}") from exc
+            raise format_segma_url_error("SEGMA seed ActionDataset API", exc) from exc
 
         if isinstance(payload, dict):
             items = payload.get("action_datasets") or payload.get("data") or payload.get("items") or []
@@ -1897,7 +1929,7 @@ def delete_segma_sync(sync_id: str) -> None:
         method="DELETE",
     )
     try:
-        with urlopen(request, timeout=20) as response:
+        with open_segma_request(request, timeout=20) as response:
             response.read()
     except HTTPError as exc:
         if exc.code == 404:
@@ -1905,7 +1937,7 @@ def delete_segma_sync(sync_id: str) -> None:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"SEGMA sync delete returned HTTP {exc.code}: {error_body}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Could not reach SEGMA sync delete API: {exc.reason}") from exc
+        raise format_segma_url_error("SEGMA sync delete API", exc) from exc
 
 
 def trigger_segma_sync(sync_id: str) -> dict:
@@ -1922,14 +1954,14 @@ def trigger_segma_sync(sync_id: str) -> dict:
         method="GET",
     )
     try:
-        with urlopen(request, timeout=20) as response:
+        with open_segma_request(request, timeout=20) as response:
             response_body = response.read().decode("utf-8")
             return json.loads(response_body) if response_body else {}
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"SEGMA sync trigger returned HTTP {exc.code}: {error_body}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Could not reach SEGMA sync trigger API: {exc.reason}") from exc
+        raise format_segma_url_error("SEGMA sync trigger API", exc) from exc
 
 
 def trigger_campaign_syncs(campaign: dict) -> list[dict]:
@@ -2689,14 +2721,14 @@ def create_segma_sync(payload: dict) -> dict:
         method="POST",
     )
     try:
-        with urlopen(request, timeout=20) as response:
+        with open_segma_request(request, timeout=20) as response:
             response_body = response.read().decode("utf-8")
             return json.loads(response_body) if response_body else {}
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"SEGMA API returned HTTP {exc.code}: {error_body}{segma_sync_request_debug(payload)}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Could not reach SEGMA API: {exc.reason}{segma_sync_request_debug(payload)}") from exc
+        raise format_segma_url_error("SEGMA API", exc, payload) from exc
 
 
 def validate_campaign_form(seed_source: dict | None = None) -> list[str]:

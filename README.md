@@ -31,6 +31,9 @@ export MSSQL_PASSWORD="secret"
 export SEGMA_API="https://segma.example.com"
 export SEGMA_TOKEN="optional-bearer-token"
 export SEGMA_USER_ID="7"
+export SEGMA_CA_BUNDLE="/path/to/segma-ca.pem"
+# Local troubleshooting only; prefer SEGMA_CA_BUNDLE for shared environments.
+# export SEGMA_SSL_VERIFY="false"
 export MSSQL_DESTINATION_ID="45"
 export SEGMA_SYNC_DESTINATIONS_JSON='[{"id":45,"name":"Marketing MSSQL","type":"sql_server_table_sync"}]'
 export SEGMA_SYNC_CHUNKSIZE="1000"
@@ -47,6 +50,8 @@ streamlit run streamlit_app.py
 See `.env.example` for the full environment variable list.
 
 The console reads campaign lists/details from `marketing.campaign`, loads segments from SEGMA `GET /api/v1/segments`, loads optional seed lists from SEGMA ActionDatasets tagged `seed`, updates campaign cancellation in MSSQL, and calls `POST /api/v1/syncs` with `action_type: mssql_table` to ask SEGMA to populate the channel job table.
+
+If SEGMA uses an internal CA or self-signed certificate, set `SEGMA_CA_BUNDLE` to a PEM file containing the CA certificate. `SEGMA_SSL_VERIFY=false` disables verification and should only be used temporarily for local troubleshooting.
 
 ## Runtime Behavior
 
