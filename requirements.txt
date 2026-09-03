@@ -1,0 +1,4 @@
+streamlit>=1.36
+pymssql>=2.3
+sendgrid>=6.11
+twilio>=9.0
